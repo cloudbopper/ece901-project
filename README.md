@@ -14,6 +14,6 @@ pip install --upgrade pip
 ```
 * Install lasagne https://github.com/Lasagne/Lasagne and its dependencies:
 ```sh
-pip install -r https://raw.githubusercontent.com/Lasagne/Lasagne/v0.1/requirements.txt
-pip install Lasagne==0.1
+pip install --upgrade https://github.com/Theano/Theano/archive/master.zip
+pip install --upgrade https://github.com/Lasagne/Lasagne/archive/master.zip
 ```
