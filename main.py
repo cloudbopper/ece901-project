@@ -228,10 +228,10 @@ def load_dataset():
         return data
 
     # We can now download and read the training and test set images and labels.
-    X_train = load_mnist_images('data/train-images-idx3-ubyte.gz')
-    y_train = load_mnist_labels('data/train-labels-idx1-ubyte.gz')
-    X_test = load_mnist_images('data/t10k-images-idx3-ubyte.gz')
-    y_test = load_mnist_labels('data/t10k-labels-idx1-ubyte.gz')
+    X_train = load_mnist_images('train-images-idx3-ubyte.gz')
+    y_train = load_mnist_labels('train-labels-idx1-ubyte.gz')
+    X_test = load_mnist_images('t10k-images-idx3-ubyte.gz')
+    y_test = load_mnist_labels('t10k-labels-idx1-ubyte.gz')
 
     # We reserve the last 10000 training examples for validation.
     X_train, X_val = X_train[:-10000], X_train[-10000:]
