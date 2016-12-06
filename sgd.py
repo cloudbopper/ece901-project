@@ -30,21 +30,8 @@ def sgd(loss_or_grads, params, learning_rate):
     updates = OrderedDict()
 
 
-    # Update params in thread-safe manner
-    # TM.updates_cv.acquire()
-    # while TM.updating:
-    #     TM.updates_cv.wait()
-    # TM.updating = 1
-    # TM.updates_cv.release()
 
     for param, grad in zip(params, grads):
         updates[param] = param - learning_rate * grad
-
-    # TM.updates_cv.acquire()
-    # assert TM.updating # TODO: remove
-    # TM.updating = 0
-    # TM.updates_cv.notify()
-    # TM.updates_cv.release()
-
 
     return updates

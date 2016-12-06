@@ -1,6 +1,7 @@
 """Multithreaded dropout experiment"""
 
 import argparse
+from collections import deque
 import os
 import time
 import threading
@@ -19,19 +20,53 @@ from thread_manager import TM
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
-    def __init__(self, train_fn, updates_fn, inputs, targets):
+    def __init__(self, read_fn, write_fn, train_fn, tid, inputs, targets):
+        # pylint: disable=too-many-arguments
         threading.Thread.__init__(self)
+        self.tid = tid
         self.train_fn = train_fn
-        self.updates_fn = updates_fn
+        self.read_fn = read_fn
+        self.write_fn = write_fn
         self.inputs = inputs
         self.targets = targets
 
     def run(self):
+        # Read per-thread params from global params
+        TM.updates_cv.acquire()
+        while TM.updating:
+            TM.updates_cv.wait()
+        TM.updating = 1
+        TM.updates_cv.release()
+
+        self.read_fn(self.tid)
+
+        TM.updates_cv.acquire()
+        assert TM.updating # TODO: remove
+        TM.updating = 0
+        TM.updates_cv.notify()
+        TM.updates_cv.release()
+
         # Train and update overall training error
         out = self.train_fn(self.inputs, self.targets)
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
+
+        # Write per-thread params into global params
+        TM.updates_cv.acquire()
+        while TM.updating:
+            TM.updates_cv.wait()
+        TM.updating = 1
+        TM.updates_cv.release()
+
+        self.write_fn(self.tid)
+
+        TM.updates_cv.acquire()
+        assert TM.updating # TODO: remove
+        TM.updating = 0
+        TM.updates_cv.notify()
+        TM.updates_cv.release()
+
         # Remove worker from active pool
         TM.worker_cv.acquire()
         TM.num_workers -= 1
@@ -71,7 +106,7 @@ def pipeline(args):
 
     # Create neural network model
     print("Building model and compiling functions...")
-    train_fn, updates_fn, val_fn = gen_computational_graph()
+    read_fn, write_fn, train_fns, val_fn = gen_computational_graphs(args)
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -87,7 +122,9 @@ def pipeline(args):
                 TM.worker_cv.wait()
             TM.num_workers += 1
             TM.worker_cv.release()
-            worker = WorkerThread(train_fn, updates_fn, inputs, targets)
+            tid, train_fn = train_fns.popleft()
+            train_fns.append((tid, train_fn))
+            worker = WorkerThread(read_fn, write_fn, train_fn, tid, inputs, targets)
             worker.start()
         TM.worker_cv.acquire()
         while TM.num_workers > 0:
@@ -128,23 +165,38 @@ def pipeline(args):
         test_acc / test_batches * 100))
 
 
-def gen_computational_graph():
+def gen_computational_graphs(args):
     """Generates Theano functions for training/testing the network"""
-    # Prepare Theano variables for inputs and targets
-    input_var = T.tensor4('inputs')
+    # pylint: disable=too-many-locals
+    # Create separate training networks for each thread
+    train_fns = deque()
+    params_per_thread = []
+    for tid in range(args.threads):
+        # Prepare Theano variables for inputs and targets
+        input_var = T.tensor4('inputs_%d' % tid)
+        target_var = T.ivector('targets_%d' % tid)
+        network = build_mlp(input_var)
+
+        # Create a loss expression for training
+        prediction = lasagne.layers.get_output(network)
+        loss = lasagne.objectives.categorical_crossentropy(prediction, target_var)
+        loss = loss.mean()
+
+        # Create update expressions for training
+        # TODO: Backprop should run without locking, only writing the updates should need locking
+        params = lasagne.layers.get_all_params(network, trainable=True)
+        params_per_thread.append(params)
+        updates = sgd(loss, params, learning_rate=0.01)
+
+        # Compile a function performing a training step on a mini-batch
+        # and returning the corresponding training loss:
+        train_fn = theano.function([input_var, target_var], loss, updates=updates)
+        train_fns.append((tid, train_fn))
+
+    # Compile a second function computing the validation loss and accuracy:
+    input_var = T.tensor4('input')
     target_var = T.ivector('targets')
     network = build_mlp(input_var)
-
-    # Create a loss expression for training
-    prediction = lasagne.layers.get_output(network)
-    loss = lasagne.objectives.categorical_crossentropy(prediction, target_var)
-    loss = loss.mean()
-
-    # Create update expressions for training
-    # TODO: Backprop should run without locking, only writing the updates should need locking
-    params = lasagne.layers.get_all_params(network, trainable=True)
-    updates = sgd(loss, params, learning_rate=0.01)
-
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -156,17 +208,21 @@ def gen_computational_graph():
     test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),
                       dtype=theano.config.floatX)
 
-    # Compile a function performing a training step on a mini-batch
-    # and returning the corresponding training loss:
-    train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    # Separate update function for thread safety
-    # TODO: fix
-    updates_fn = theano.function([], [])
-
-    # Compile a second function computing the validation loss and accuracy:
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
 
-    return train_fn, updates_fn, val_fn
+    # update params using per-thread params
+    gparams = lasagne.layers.get_all_params(network, trainable=True)
+    def read_fn(tid):
+        """Update per-thread params from global params"""
+        tparams = params_per_thread[tid]
+        for idx, _ in enumerate(gparams):
+            tparams[idx].set_value(gparams[idx].get_value())
+    def write_fn(tid):
+        """Update global params from per-thread params"""
+        tparams = params_per_thread[tid]
+        for idx, _ in enumerate(gparams):
+            gparams[idx].set_value(tparams[idx].get_value())
+    return read_fn, write_fn, train_fns, val_fn
 
 
 def load_dataset():
