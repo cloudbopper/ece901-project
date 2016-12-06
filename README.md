@@ -17,3 +17,9 @@ pip install --upgrade pip
 pip install --upgrade https://github.com/Theano/Theano/archive/master.zip
 pip install --upgrade https://github.com/Lasagne/Lasagne/archive/master.zip
 ```
+
+# Running
+main.py is the main script. See cmds.txt for sample command lines. To run the last the command in cmds.txt:
+```
+tail -n 1 cmds.txt|sh
+```
