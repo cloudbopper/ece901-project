@@ -1,0 +1,1 @@
+python main.py -threads 1 -worker_iterations 1 -batch_size 500 -dropout_type overlapping -dropout_rate .5 -num_epochs 10

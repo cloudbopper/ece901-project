@@ -12,6 +12,7 @@ import theano
 import theano.tensor as T
 
 import dropout
+from sgd import sgd
 
 # pylint: disable=superfluous-parens
 
@@ -47,7 +48,7 @@ class WorkerThread(threading.Thread):
             TM.updates_cv.wait()
         TM.updating = 1
         TM.updates_cv.release()
-        self.updates_fn((), ())
+        self.updates_fn()
         TM.updates_cv.acquire()
         assert TM.updating # TODO: remove
         TM.updating = 0
@@ -65,17 +66,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-threads", help="number of threads to launch",
                         required=True, type=int)
-    parser.add_argument("-master_iterations", help="number of iterations to run"
-                        " the master for", required=True, type=int)
-    parser.add_argument("-worker_iterations", help="number of iteratinos to run"
+    parser.add_argument("-worker_iterations", help="number of iterations to run"
                         " each worker for", required=True, type=int)
     parser.add_argument("-batch_size", help="size of batch operated upon by "
                         "each worker thread", required=True, type=int)
     parser.add_argument("-dropout_type", help="type of dropout", required=True,
-                        type=int, choices=["disjoint, overlapping"])
+                        choices=["disjoint", "overlapping"])
     parser.add_argument("-dropout_rate", required=True)
 
-    parser.add_argument("-num_epochs", default=500)
+    parser.add_argument("-num_epochs", default=500, type=int)
 
     args = parser.parse_args()
     pipeline(args)
@@ -106,7 +105,7 @@ def pipeline(args):
             train_batches += 1
             inputs, targets = batch
             TM.worker_cv.acquire()
-            while TM.num_workers >= args.num_threads:
+            while TM.num_workers >= args.threads:
                 TM.worker_cv.wait()
             TM.num_workers += 1
             TM.worker_cv.release()
@@ -120,7 +119,7 @@ def pipeline(args):
         val_err = 0
         val_acc = 0
         val_batches = 0
-        for batch in iterate_minibatches(X_val, y_val, 500, shuffle=False):
+        for batch in iterate_minibatches(X_val, y_val, args.batch_size, shuffle=False):
             inputs, targets = batch
             err, acc = val_fn(inputs, targets)
             val_err += err
@@ -164,8 +163,9 @@ def gen_computational_graph():
     loss = loss.mean()
 
     # Create update expressions for training
+    # TODO: Backprop should run without locking, only writing the updates should need locking
     params = lasagne.layers.get_all_params(network, trainable=True)
-    updates = lasagne.updates.sgd(loss, params, learning_rate=0.01)
+    updates = sgd(loss, params, learning_rate=0.01)
 
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
@@ -178,11 +178,12 @@ def gen_computational_graph():
     test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),
                       dtype=theano.config.floatX)
 
-    # Compile a function performing a training step on a mini-batch (by giving
-    # the updates dictionary) and returning the corresponding training loss:
-    train_fn = theano.function([input_var, target_var], loss)
+    # Compile a function performing a training step on a mini-batch
+    # and returning the corresponding training loss:
+    train_fn = theano.function([input_var, target_var], loss, updates=updates)
     # Separate update function for thread safety
-    updates_fn = theano.function((), (), updates=updates)
+    # TODO: fix
+    updates_fn = theano.function([], [])
 
     # Compile a second function computing the validation loss and accuracy:
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
