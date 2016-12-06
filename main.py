@@ -13,19 +13,9 @@ import theano.tensor as T
 
 import dropout
 from sgd import sgd
+from thread_manager import TM
 
 # pylint: disable=superfluous-parens
-
-class TM(object):
-    """Thread manager"""
-    # pylint: disable=too-few-public-methods
-    num_workers = 0
-    train_err = 0
-    updating = 0
-    worker_cv = threading.Condition()
-    updates_cv = threading.Condition()
-    err_lock = threading.Lock()
-
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
@@ -42,18 +32,6 @@ class WorkerThread(threading.Thread):
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
-        # Update params in thread-safe manner
-        TM.updates_cv.acquire()
-        while TM.updating:
-            TM.updates_cv.wait()
-        TM.updating = 1
-        TM.updates_cv.release()
-        self.updates_fn()
-        TM.updates_cv.acquire()
-        assert TM.updating # TODO: remove
-        TM.updating = 0
-        TM.updates_cv.notify()
-        TM.updates_cv.release()
         # Remove worker from active pool
         TM.worker_cv.acquire()
         TM.num_workers -= 1
