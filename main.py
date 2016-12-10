@@ -5,7 +5,9 @@ from collections import deque
 import os
 import time
 import threading
-from urllib import urlretrieve
+import urllib
+#from urllib import urlretrieve
+from urllib.request import urlretrieve
 
 import lasagne
 import numpy as np
