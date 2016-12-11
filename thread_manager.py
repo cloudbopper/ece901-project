@@ -11,3 +11,6 @@ class TM(object):
     worker_cv = threading.Condition()
     updates_cv = threading.Condition()
     err_lock = threading.Lock()
+    # Return val parameter to enable waiting for all threads to be done before averaging and writing result into shared memory
+    retVals = []
+	
