@@ -5,7 +5,7 @@ from collections import deque
 import os
 import time
 import threading
-#FIXME
+#NOTE: Use urllib.request for python 3
 #from urllib import urlretrieve
 from urllib.request import urlretrieve 
 
@@ -22,6 +22,7 @@ from thread_manager import TM
 
 
 class WorkerThread2(threading.Thread):
+    """ Worker thread for averaging"""
     def __init__(self, read_fn, train_fn, tid, inputs, targets):
         # pylint: disable=too-many-arguments
         threading.Thread.__init__(self)
@@ -30,18 +31,20 @@ class WorkerThread2(threading.Thread):
         self.read_fn = read_fn
         self.inputs = inputs
         self.targets = targets
-		self.retVal = False
+        self.retVal = False
 		
-	def run(self):	
-	    # Read and Train 
+    def run(self):	
+        # Read and Train 
         self.read_fn(self.tid)
         out = self.train_fn(self.inputs, self.targets)
-        self.retVal = True      
+        TM.train_err += out
+        self.retVal = True
+        TM.retVals[self.tid] = True 
+ 
+		
 
-	def writeAvg(write_fn):
-		self.write_fn()
-        #self.write_fn(self.tid)		
-# Call the write function2 (no write/has to have the ret val/update at end, should have a run2 method for writing), 3creating thread class, 4test and validation
+
+
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
@@ -108,65 +111,68 @@ def main():
                         " each worker for", required=True, type=int)
     parser.add_argument("-batch_size", help="size of batch operated upon by "
                         "each worker thread", required=True, type=int)
-    parser.add_argument("-dropout_type", help="type of dropout", required=True,
-                        choices=["disjoint", "overlapping"])
+    parser.add_argument("-dropout_type", help="type of dropout", required=True,choices=["disjoint", "overlapping"])
+    parser.add_argument("-averaging", help="boolean to indicate whether to average across threads", required=True,choices=["yes", "no"])					
     parser.add_argument("-dropout_rate", required=True)
 
     parser.add_argument("-num_epochs", default=500, type=int)
 
     args = parser.parse_args()
-	#FIXME
-    argsReadIn = vars(args)
-    if argsReadIn["dropout_type"] == "overlapping":
-        pipeline(args)
-		#FIXME
-    elif argsReadIn["dropout_type"] == "disjoint":
-        pipelineDisjoint(args)
-		#FIXME
 	
-def pipelineDisjoint(args):
-    """Dropout experiment pipeline that implements disjoint dropout
+    argsReadIn = vars(args)
+    if argsReadIn["averaging"] == "no":
+        pipeline(args)
+	
+    elif argsReadIn["averaging"] == "yes":
+        pipelineAvg(args)
+	
+	
+def pipelineAvg(args):
+    """Dropout experiment pipeline that 
+	1. Waits for all threads to finish in a given iteration
+	2. Averages the updates from all threads
+    3. Writes the result into shared memory
     """
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
    
-
+    # Create neural network model
+    print("Building model and compiling functions...")
+    read_fn, write_avg_fn, train_fns, val_fn = gen_computational_graphs2(args)
+   
+   
+   
     # Finally, launch the training loop.
     print("Starting training...")
     for epoch in range(args.num_epochs):
-	
-		# Create neural network model
-		print("At the start of every epoch, create subnetworks for each thread. Building the corresponding model and compiling functions...")
-		read_fn, write_avg_fn, train_fns, val_fn = gen_computational_graphs2(args)
-	
-	
+        TM.train_err = 0
         # In each epoch, we do a full pass over the training data:
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatches2(X_train, y_train, 500, shuffle=True,args):
+        for batch in iterate_minibatches2(X_train, y_train, 500, args, shuffle=True):
             train_batches += args.threads
 			
             inputsList, targetsList = batch
 			
-			threads = []
-			retVals = []
-			for thIn in range(args.threads):
-			    tid, train_fn = train_fns[thIn]
-				ti = WorkerThread2(read_fn,train_fn, thIn, inputsList[thIn], targetsList[thIn]) #FIXME1
-				# Call the write function2 (no write/has to have the ret val, should have a run2 method for writing), 3creating thread class, 4test and validation
-				threads.append(ti)
-				retVals.append(ti.retVal)
+            threads = []
+            TM.retVals = []
+            for thIn in range(args.threads):
+                tid, train_fn = train_fns[thIn]
+                ti = WorkerThread2(read_fn,train_fn, thIn, inputsList[thIn], targetsList[thIn]) 
+                threads.append(ti)
+                TM.retVals.append(False)
 				
-			for thIn in range(args.threads):
-				threads[thIn].start()
+                			
+            for thIn in range(args.threads):
+                threads[thIn].start()
             
-            while not all(retVals):
+            	
+            while not all(TM.retVals):
                 pass
 				
-            threads[-1].writeAvg(write_avg_fn)
-            
-		# FIXME: Check about this		
+            write_avg_fn()
+            		
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
@@ -178,13 +184,12 @@ def pipelineDisjoint(args):
             val_acc += acc
             val_batches += 1
 
-        # Then we print the results for this epoch:
+	
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, args.num_epochs, time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(TM.train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
-        print("  validation accuracy:\t\t{:.2f} %".format(
-            val_acc / val_batches * 100))
+        print("  validation accuracy:\t\t{:.2f} %".format(val_acc / val_batches * 100))
 
     # After training, we compute and print the test error:
     test_err = 0
@@ -198,8 +203,7 @@ def pipelineDisjoint(args):
         test_batches += 1
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
-    print("  test accuracy:\t\t{:.2f} %".format(
-        test_acc / test_batches * 100))
+    print("  test accuracy:\t\t{:.2f} %".format(test_acc / test_batches * 100))
 
 	
    		
@@ -207,6 +211,7 @@ def pipelineDisjoint(args):
 
 	
 def build_custom_mlp(input_var, depth, width, drop_input,drop_hidden):
+    """Builds a cutom multilayer perceptron"""
     # By default, this creates the same network as `build_mlp`, but it can be
     # customized with respect to the number and size of hidden layers. This
     # mostly showcases how creating a network in Python code can be a lot more
@@ -216,15 +221,13 @@ def build_custom_mlp(input_var, depth, width, drop_input,drop_hidden):
     # just used different names above for clarity.
 
     # Input layer and dropout (with shortcut `dropout` for `DropoutLayer`):
-    network = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),
-                                        input_var=input_var)
+    network = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),input_var=input_var)
     if drop_input:
         network = lasagne.layers.dropout(network, p=drop_input)
     # Hidden layers and dropout:
     nonlin = lasagne.nonlinearities.rectify
     for _ in range(depth):
-        network = lasagne.layers.DenseLayer(
-                network, width, nonlinearity=nonlin)
+        network = lasagne.layers.DenseLayer(network, width, nonlinearity=nonlin)
         if drop_hidden:
             network = lasagne.layers.dropout(network, p=drop_hidden)
     # Output layer:
@@ -235,12 +238,12 @@ def build_custom_mlp(input_var, depth, width, drop_input,drop_hidden):
 	
 	
 	
-#FIXME
+
 def gen_computational_graphs2(args):
-	"""Generates Theano functions for training/testing the network when the dropout is disjoint"""
+    """Generates Theano functions for training/testing the network when there is averaging"""
     # pylint: disable=too-many-locals
     # Create separate training networks for each thread
-    train_fns = []#deque()
+    train_fns = []
     params_per_thread = []
     for tid in range(args.threads):
         # Prepare Theano variables for inputs and targets
@@ -248,11 +251,10 @@ def gen_computational_graphs2(args):
         target_var = T.ivector('targets_%d' % tid)
         
         # Create neural network model (depending on first command line parameter)
-        print("Building model and compiling functions...")
         depth = 2
-		width = 20
-		drop_in = None
-		drop_hid = 0.5
+        width = 20
+        drop_in = None
+        drop_hid = 0.5
         network = build_custom_mlp(input_var, int(depth), int(width), drop_in, float(drop_hid))
    
         # Create a loss expression for training, i.e., a scalar objective we want
@@ -267,6 +269,7 @@ def gen_computational_graphs2(args):
         # parameters at each training step. Here, we'll use Stochastic Gradient
         # Descent (SGD) with Nesterov momentum, but Lasagne offers plenty more.
         params = lasagne.layers.get_all_params(network, trainable=True)
+        params_per_thread.append(params)
         updates = lasagne.updates.nesterov_momentum(loss, params, learning_rate=0.01, momentum=0.9)
 		
         # Compile a function performing a training step on a mini-batch (by giving
@@ -289,12 +292,12 @@ def gen_computational_graphs2(args):
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
     test_prediction = lasagne.layers.get_output(network, deterministic=True)
-    test_loss = lasagne.objectives.categorical_crossentropy(test_prediction,
-                                                            target_var)
+    test_loss = lasagne.objectives.categorical_crossentropy(test_prediction,target_var)
+                                                            
     test_loss = test_loss.mean()
     # As a bonus, also create an expression for the classification accuracy:
-    test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),
-                      dtype=theano.config.floatX)
+    test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),dtype=theano.config.floatX)
+                      
 
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
 
@@ -309,14 +312,14 @@ def gen_computational_graphs2(args):
     def write_avg_fn():
         """Update global params from per-thread params"""
         for idx, _ in enumerate(gparams):
-			indVal = 0
-		    for tid in range(args.threads):	
-			    tparams = params_per_thread[tid]
-				try:
-					indVal += tparams[idx].get_value()
-				except KeyError:
-					pass
-			indVal = (indVal*1.0)/args.threads	
+            indVal = 0
+            for tid in range(args.threads):	
+                tparams = params_per_thread[tid]
+                try:
+                    indVal += tparams[idx].get_value()
+                except KeyError:
+                    pass
+            indVal = (indVal*1.0)/args.threads	
             gparams[idx].set_value(indVal)
 			
     return read_fn, write_avg_fn, train_fns, val_fn
@@ -508,11 +511,11 @@ def load_dataset():
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 	
-def iterate_minibatches2(inputs, targets, batchsize, shuffle=False):
+def iterate_minibatches2(inputs, targets, batchsize, args, shuffle=False):
     """Helper function to iterate over training data in mini-batches"""
     assert len(inputs) == len(targets)
-	inputsList = []
-	targetsList = []
+    inputsList = []
+    targetsList = []
 	
     if shuffle:
         indices = np.arange(len(inputs))
@@ -521,26 +524,26 @@ def iterate_minibatches2(inputs, targets, batchsize, shuffle=False):
     numth = 0	
     for start_idx in range(0, len(inputs) - batchsize + 1, batchsize):
         if numth < args.threads:
-		    if shuffle:
-			    excerpt = indices[start_idx:start_idx + batchsize]
-			else:
-				excerpt = slice(start_idx, start_idx + batchsize)
-		    inputsList.append(inputs[excerpt])
-			targetsList.append(targets[excerpt])
-			numth += 1
+            if shuffle:
+                excerpt = indices[start_idx:start_idx + batchsize]
+            else:
+                excerpt = slice(start_idx, start_idx + batchsize)
+            inputsList.append(inputs[excerpt])
+            targetsList.append(targets[excerpt])
+            numth += 1
 			
-		elif numth == args.threads:
-		    yield inputsList, targetsList
-		    inputsList =[]
-			targetsList =[]
-		    numth = 0
-			if shuffle:
-			    excerpt = indices[start_idx:start_idx + batchsize]
-			else:
-				excerpt = slice(start_idx, start_idx + batchsize)
-		    inputsList.append(inputs[excerpt])
-			targetsList.append(targets[excerpt])
-			numth += 1
+        elif numth == args.threads:
+            yield inputsList, targetsList
+            inputsList =[]
+            targetsList =[]
+            numth = 0
+            if shuffle:
+                excerpt = indices[start_idx:start_idx + batchsize]
+            else:
+                excerpt = slice(start_idx, start_idx + batchsize)
+            inputsList.append(inputs[excerpt])
+            targetsList.append(targets[excerpt])
+            numth += 1
 		
 	
 	
