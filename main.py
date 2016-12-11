@@ -630,10 +630,3 @@ if __name__ == "__main__":
     TrainErrVsEpochAvg() 
     
 	
-	
-# Namespace(averaging='yes', batch_size=500, dropout_rate='.5', dropout_type='overlapping', num_epochs=10, threads=4, worker_iterations=1)
-#1. create an argparse method
-#2. create a for loop for p
-#3. for every p change the instance and call the avg method
-#4. run and see for one p
-#5. for mult p
