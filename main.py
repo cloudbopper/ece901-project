@@ -17,6 +17,7 @@ import theano.tensor as T
 import dropout
 from sgd import sgd
 from thread_manager import TM
+import Plots
 
 # pylint: disable=superfluous-parens
 
@@ -142,7 +143,7 @@ def pipelineAvg(args):
     read_fn, write_avg_fn, train_fns, val_fn = gen_computational_graphs2(args)
    
    
-   
+    TM.xvecPlot, TM.yvecPlot = [], []   
     # Finally, launch the training loop.
     print("Starting training...")
     for epoch in range(args.num_epochs):
@@ -184,9 +185,11 @@ def pipelineAvg(args):
             val_acc += acc
             val_batches += 1
 
-	
-        print("Epoch {} of {} took {:.3f}s".format(
-            epoch + 1, args.num_epochs, time.time() - start_time))
+        TM.xvecPlot.append(epoch+1)
+        TM.yvecPlot.append((TM.train_err*1.0)/ train_batches)	
+		
+        print("Epoch {} of {} with p = {} took {:.3f}s".format(
+            epoch + 1, args.num_epochs, args.threads ,time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(TM.train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
         print("  validation accuracy:\t\t{:.2f} %".format(val_acc / val_batches * 100))
@@ -605,4 +608,32 @@ def build_mlp(input_var=None):
     return l_out
 
 if __name__ == "__main__":
-    main()
+
+    def TrainErrVsEpochAvg():	
+        xlist, ylist  = [], []	
+        nameSp = argparse.Namespace()
+        nameSp.averaging = 'yes'
+        nameSp.batch_size = 500
+        nameSp.dropout_rate = 0.5
+        nameSp.dropout_type = 'overlapping'
+        nameSp.num_epochs = 10       
+        nameSp.worker_iterations = 1	
+        for numTh in range(1,5):
+            nameSp.threads = numTh		
+            pipelineAvg(nameSp)		
+            xlist.append(TM.xvecPlot)	
+            ylist.append(TM.yvecPlot)
+			
+        Plots.TrainErrVsEpoch(xlist,ylist)
+
+	    
+    TrainErrVsEpochAvg() 
+    
+	
+	
+# Namespace(averaging='yes', batch_size=500, dropout_rate='.5', dropout_type='overlapping', num_epochs=10, threads=4, worker_iterations=1)
+#1. create an argparse method
+#2. create a for loop for p
+#3. for every p change the instance and call the avg method
+#4. run and see for one p
+#5. for mult p
