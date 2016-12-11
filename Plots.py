@@ -15,8 +15,8 @@ def TrainErrVsEpoch(xlist,ylist):
     plt.show()    
 
 	
-#TODO: Another plot based on definition of speedup with respect serial case? (Speed up versus number of cores)	
-	
+#TODO1: Another plot based on definition of speedup with respect serial case? (Speed up versus number of cores)	
+#TODO2: Plot comparing time per epoch versus number of threads?	
 	
 
 
