@@ -1,0 +1,107 @@
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>python main.py -threads 1 -worker_iterations 1 -batch_size 500 -dropout_type overlapping -averaging yes -dropout_rate .5 -num_epochs 10
+Loading data...
+Building model and compiling functions...
+Starting training...
+Epoch 1 of 10 took 2.401s
+  training loss:                2.140872
+  validation loss:              1.701134
+  validation accuracy:          65.57 %
+Epoch 2 of 10 took 2.316s
+  training loss:                1.786052
+  validation loss:              1.229633
+  validation accuracy:          75.38 %
+Epoch 3 of 10 took 2.418s
+  training loss:                1.571443
+  validation loss:              0.977039
+  validation accuracy:          81.21 %
+Epoch 4 of 10 took 2.439s
+  training loss:                1.412860
+  validation loss:              0.831139
+  validation accuracy:          84.03 %
+Epoch 5 of 10 took 2.344s
+  training loss:                1.322440
+  validation loss:              0.744548
+  validation accuracy:          85.70 %
+Epoch 6 of 10 took 2.403s
+  training loss:                1.253515
+  validation loss:              0.672443
+  validation accuracy:          87.29 %
+Epoch 7 of 10 took 2.341s
+  training loss:                1.207432
+  validation loss:              0.632238
+  validation accuracy:          87.53 %
+Epoch 8 of 10 took 2.339s
+  training loss:                1.171128
+  validation loss:              0.591104
+  validation accuracy:          88.28 %
+Epoch 9 of 10 took 2.324s
+  training loss:                1.132939
+  validation loss:              0.568233
+  validation accuracy:          88.59 %
+Epoch 10 of 10 took 2.378s
+  training loss:                1.123845
+  validation loss:              0.548557
+  validation accuracy:          89.16 %
+Final results:
+  test loss:                    0.550154
+  test accuracy:                88.74 %
+
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>
+C:\Lasagne\code>python main.py -threads 4 -worker_iterations 1 -batch_size 500 -dropout_type overlapping -averaging yes -dropout_rate .5 -num_epochs 10
+Loading data...
+Building model and compiling functions...
+Starting training...
+Epoch 1 of 10 took 1.222s
+  training loss:                2.308437
+  validation loss:              2.227705
+  validation accuracy:          22.04 %
+Epoch 2 of 10 took 1.067s
+  training loss:                2.157570
+  validation loss:              2.107298
+  validation accuracy:          42.92 %
+Epoch 3 of 10 took 1.142s
+  training loss:                2.115478
+  validation loss:              1.975615
+  validation accuracy:          53.14 %
+Epoch 4 of 10 took 1.181s
+  training loss:                2.002074
+  validation loss:              1.827475
+  validation accuracy:          60.28 %
+Epoch 5 of 10 took 1.126s
+  training loss:                1.931625
+  validation loss:              1.671544
+  validation accuracy:          65.62 %
+Epoch 6 of 10 took 1.150s
+  training loss:                1.833821
+  validation loss:              1.524529
+  validation accuracy:          68.59 %
+Epoch 7 of 10 took 1.083s
+  training loss:                1.700410
+  validation loss:              1.385588
+  validation accuracy:          70.15 %
+Epoch 8 of 10 took 1.178s
+  training loss:                1.684015
+  validation loss:              1.287203
+  validation accuracy:          72.37 %
+Epoch 9 of 10 took 1.127s
+  training loss:                1.627070
+  validation loss:              1.190003
+  validation accuracy:          73.90 %
+Epoch 10 of 10 took 1.046s
+  training loss:                1.574636
+  validation loss:              1.113898
+  validation accuracy:          75.61 %
+Final results:
+  test loss:                    1.126031
+  test accuracy:                74.71 %
+
+C:\Lasagne\code>
