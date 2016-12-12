@@ -41,7 +41,6 @@ class WorkerThread(threading.Thread):
         self.read_fn(self.tid)
 
         TM.updates_cv.acquire()
-        assert TM.updating # TODO: remove
         TM.updating = 0
         TM.updates_cv.notify()
         TM.updates_cv.release()
@@ -62,7 +61,6 @@ class WorkerThread(threading.Thread):
         self.write_fn(self.tid)
 
         TM.updates_cv.acquire()
-        assert TM.updating # TODO: remove
         TM.updating = 0
         TM.updates_cv.notify()
         TM.updates_cv.release()
@@ -112,6 +110,7 @@ def pipeline(args):
     print("Starting training...")
     for epoch in range(args.num_epochs):
         # In each epoch, we do a full pass over the training data:
+        TM.train_err = 0
         train_batches = 0
         start_time = time.time()
         for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
