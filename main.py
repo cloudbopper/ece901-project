@@ -20,6 +20,7 @@ from thread_manager import TM
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
+    # pylint: disable=no-self-use
     def __init__(self, read_fn, write_fn, train_fn, tid, inputs, targets):
         # pylint: disable=too-many-arguments
         threading.Thread.__init__(self)
@@ -30,41 +31,45 @@ class WorkerThread(threading.Thread):
         self.inputs = inputs
         self.targets = targets
 
-    def run(self):
-        # Read per-thread params from global params
+    def pre_update(self):
+        """Pre-update CV management"""
         TM.updates_cv.acquire()
         while TM.updating:
             TM.updates_cv.wait()
         TM.updating = 1
         TM.updates_cv.release()
 
-        self.read_fn(self.tid)
-
+    def post_update(self):
+        """Post-update CV management"""
         TM.updates_cv.acquire()
         TM.updating = 0
         TM.updates_cv.notify()
         TM.updates_cv.release()
 
-        # Train and update overall training error
-        out = self.train_fn(self.inputs, self.targets)
+    def read_params(self):
+        """Read per-thread params from global params"""
+        self.pre_update()
+        self.read_fn(self.tid)
+        self.post_update()
+
+    def write_params(self):
+        """Write per-thread params into global params"""
+        self.pre_update()
+        self.write_fn(self.tid)
+        self.post_update()
+
+    def train(self):
+        """Train and update overall training error"""
+        out = self.train_fn(self.tid)(self.inputs, self.targets)
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
 
-        # Write per-thread params into global params
-        TM.updates_cv.acquire()
-        while TM.updating:
-            TM.updates_cv.wait()
-        TM.updating = 1
-        TM.updates_cv.release()
-
-        self.write_fn(self.tid)
-
-        TM.updates_cv.acquire()
-        TM.updating = 0
-        TM.updates_cv.notify()
-        TM.updates_cv.release()
-
+    def run(self):
+        """Run worker thread"""
+        self.read_params()
+        self.train()
+        self.write_params()
         # Remove worker from active pool
         TM.worker_cv.acquire()
         TM.num_workers -= 1
@@ -104,7 +109,7 @@ def pipeline(args):
 
     # Create neural network model
     print("Building model and compiling functions...")
-    read_fn, write_fn, train_fns, val_fn = gen_computational_graphs(args)
+    read_fn, write_fn, train_fn, val_fn = gen_computational_graphs(args)
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -113,6 +118,7 @@ def pipeline(args):
         TM.train_err = 0
         train_batches = 0
         start_time = time.time()
+        tids = deque(range(args.threads))
         for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
             train_batches += 1
             inputs, targets = batch
@@ -121,8 +127,8 @@ def pipeline(args):
                 TM.worker_cv.wait()
             TM.num_workers += 1
             TM.worker_cv.release()
-            tid, train_fn = train_fns.popleft()
-            train_fns.append((tid, train_fn))
+            tid = tids.popleft()
+            tids.append(tid)
             worker = WorkerThread(read_fn, write_fn, train_fn, tid, inputs, targets)
             worker.start()
         TM.worker_cv.acquire()
@@ -168,7 +174,7 @@ def gen_computational_graphs(args):
     """Generates Theano functions for training/testing the network"""
     # pylint: disable=too-many-locals
     # Create separate training networks for each thread
-    train_fns = deque()
+    train_fns = []
     params_per_thread = []
     for tid in range(args.threads):
         # Prepare Theano variables for inputs and targets
@@ -190,7 +196,8 @@ def gen_computational_graphs(args):
         # Compile a function performing a training step on a mini-batch
         # and returning the corresponding training loss:
         train_fn = theano.function([input_var, target_var], loss, updates=updates)
-        train_fns.append((tid, train_fn))
+        train_fns.append(train_fn)
+    train_fn = lambda(tid): train_fns[tid]
 
     # Compile a second function computing the validation loss and accuracy:
     input_var = T.tensor4('input')
@@ -221,7 +228,7 @@ def gen_computational_graphs(args):
         tparams = params_per_thread[tid]
         for idx, _ in enumerate(gparams):
             gparams[idx].set_value(tparams[idx].get_value())
-    return read_fn, write_fn, train_fns, val_fn
+    return read_fn, write_fn, train_fn, val_fn
 
 
 def load_dataset():
