@@ -6,14 +6,16 @@ import theano.tensor as T
 class DropoutLayerOverlapping(lasagne.layers.DropoutLayer):
     """Dropout layer which may have overlaps between worker threads"""
 
-    def __init__(self, incoming, **kwargs):
+    def __init__(self, incoming, mask=None, **kwargs):
         super(DropoutLayerOverlapping, self).__init__(incoming, **kwargs)
+        self.mask = mask
 
-    def get_output_for(self, input, deterministic=False,
-                       master_iter=None, thread_id=None, **kwargs):
+    def get_output_for(self, input, deterministic=False, **kwargs):
         # pylint: disable=redefined-builtin,unused-argument
         if deterministic or self.p == 0:
             return input
+        elif self.mask:
+            return input * self.mask
         else:
             # Using theano constant to prevent upcasting
             one = T.constant(1)

@@ -8,12 +8,13 @@ import threading
 from urllib import urlretrieve
 
 import lasagne
+from lasagne.random import get_rng
 import numpy as np
 import theano
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 import theano.tensor as T
 
 import dropout
-from sgd import sgd
 from thread_manager import TM
 
 # pylint: disable=superfluous-parens
@@ -21,13 +22,14 @@ from thread_manager import TM
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
     # pylint: disable=no-self-use
-    def __init__(self, read_fn, write_fn, train_fn, tid, inputs, targets):
+    def __init__(self, read_fn, write_fn, train_fn, mask_fn, tid, inputs, targets):
         # pylint: disable=too-many-arguments
         threading.Thread.__init__(self)
         self.tid = tid
         self.train_fn = train_fn
         self.read_fn = read_fn
         self.write_fn = write_fn
+        self.mask_fn = mask_fn
         self.inputs = inputs
         self.targets = targets
 
@@ -60,7 +62,7 @@ class WorkerThread(threading.Thread):
 
     def train(self):
         """Train and update overall training error"""
-        out = self.train_fn(self.tid)(self.inputs, self.targets)
+        out = self.train_fn(self.tid)(self.inputs, self.targets, *self.mask_fn(self.tid))
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
@@ -109,7 +111,8 @@ def pipeline(args):
 
     # Create neural network model
     print("Building model and compiling functions...")
-    read_fn, write_fn, train_fn, val_fn = gen_computational_graphs(args)
+    read_fn, write_fn, train_fn, val_fn, network = gen_computational_graphs(args)
+    mask_fn = gen_mask_functions(network)
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -119,7 +122,7 @@ def pipeline(args):
         train_batches = 0
         start_time = time.time()
         tids = deque(range(args.threads))
-        for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
+        for batch in iterate_minibatches(X_train, y_train, args.batch_size, shuffle=True):
             train_batches += 1
             inputs, targets = batch
             TM.worker_cv.acquire()
@@ -129,7 +132,7 @@ def pipeline(args):
             TM.worker_cv.release()
             tid = tids.popleft()
             tids.append(tid)
-            worker = WorkerThread(read_fn, write_fn, train_fn, tid, inputs, targets)
+            worker = WorkerThread(read_fn, write_fn, train_fn, mask_fn, tid, inputs, targets)
             worker.start()
         TM.worker_cv.acquire()
         while TM.num_workers > 0:
@@ -180,7 +183,7 @@ def gen_computational_graphs(args):
         # Prepare Theano variables for inputs and targets
         input_var = T.tensor4('inputs_%d' % tid)
         target_var = T.ivector('targets_%d' % tid)
-        network = build_mlp(input_var)
+        network, masks = build_mlp(input_var, mask_inputs=True)
 
         # Create a loss expression for training
         prediction = lasagne.layers.get_output(network)
@@ -188,21 +191,24 @@ def gen_computational_graphs(args):
         loss = loss.mean()
 
         # Create update expressions for training
-        # TODO: Backprop should run without locking, only writing the updates should need locking
         params = lasagne.layers.get_all_params(network, trainable=True)
         params_per_thread.append(params)
-        updates = sgd(loss, params, learning_rate=0.01)
+        updates = lasagne.updates.nesterov_momentum(loss, params,
+                                                    learning_rate=0.01,
+                                                    momentum=0.9)
+        # TODO: remove following (nesterov momentum performs significantly better)
+        # updates = sgd(loss, params, learning_rate=0.01)
 
         # Compile a function performing a training step on a mini-batch
         # and returning the corresponding training loss:
-        train_fn = theano.function([input_var, target_var], loss, updates=updates)
+        train_fn = theano.function([input_var, target_var] + masks, loss, updates=updates)
         train_fns.append(train_fn)
     train_fn = lambda(tid): train_fns[tid]
 
     # Compile a second function computing the validation loss and accuracy:
     input_var = T.tensor4('input')
     target_var = T.ivector('targets')
-    network = build_mlp(input_var)
+    network, _ = build_mlp(input_var)
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -228,7 +234,30 @@ def gen_computational_graphs(args):
         tparams = params_per_thread[tid]
         for idx, _ in enumerate(gparams):
             gparams[idx].set_value(tparams[idx].get_value())
-    return read_fn, write_fn, train_fn, val_fn
+    return read_fn, write_fn, train_fn, val_fn, network
+
+
+def gen_mask_functions(network):
+    """Returns dropout mask-generating functions"""
+    rng = RandomStreams(get_rng().randint(1, 2147462579))
+    layers = lasagne.layers.get_all_layers(network)
+    mask_fns = []
+    one = T.constant(1)
+    for layer in layers:
+        if isinstance(layer, dropout.DropoutLayerOverlapping):
+            # compute size of layer; use attribute p of layer for dropout rate
+            # workaround to set mask shape correctly regardless of input layer
+            if isinstance(layer.input_layer, lasagne.layers.InputLayer):
+                mask_shape = layer.input_layer.output_shape[1:]
+            else:
+                mask_shape = (layer.input_layer.num_units,)
+            mask = rng.binomial(mask_shape, p=(one-layer.p))
+            func = theano.function([], mask)
+            mask_fns.append(func)
+    def mask_fn(tid):
+        """Returns function that computes dropout mask"""
+        return [func() for func in mask_fns]
+    return mask_fn
 
 
 def load_dataset():
@@ -297,7 +326,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
-def build_mlp(input_var=None):
+def build_mlp(input_var=None, mask_inputs=False):
     """Build MLP model"""
     # pylint: disable=bad-continuation
     # This creates an MLP of two hidden layers of 800 units each, followed by
@@ -310,8 +339,11 @@ def build_mlp(input_var=None):
     l_in = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),
                                      input_var=input_var)
 
+    mask_in = None
+    if mask_inputs:
+        mask_in = T.ltensor3()
     # Apply 20% dropout to the input data:
-    l_in_drop = dropout.DropoutLayerOverlapping(l_in, p=0.2)
+    l_in_drop = dropout.DropoutLayerOverlapping(l_in, mask=mask_in, p=0.2)
 
     # Add a fully-connected layer of 800 units, using the linear rectifier, and
     # initializing weights with Glorot's scheme (which is the default anyway):
@@ -321,7 +353,10 @@ def build_mlp(input_var=None):
             W=lasagne.init.GlorotUniform())
 
     # We'll now add dropout of 50%:
-    l_hid1_drop = dropout.DropoutLayerOverlapping(l_hid1, p=0.5)
+    mask_hid1 = None
+    if mask_inputs:
+        mask_hid1 = T.lvector()
+    l_hid1_drop = dropout.DropoutLayerOverlapping(l_hid1, mask=mask_hid1, p=0.5)
 
     # Another 800-unit layer:
     l_hid2 = lasagne.layers.DenseLayer(
@@ -329,16 +364,20 @@ def build_mlp(input_var=None):
             nonlinearity=lasagne.nonlinearities.rectify)
 
     # 50% dropout again:
-    l_hid2_drop = dropout.DropoutLayerOverlapping(l_hid2, p=0.5)
+    mask_hid2 = None
+    if mask_inputs:
+        mask_hid2 = T.lvector()
+    l_hid2_drop = dropout.DropoutLayerOverlapping(l_hid2, mask=mask_hid2, p=0.5)
 
     # Finally, we'll add the fully-connected output layer, of 10 softmax units:
     l_out = lasagne.layers.DenseLayer(
             l_hid2_drop, num_units=10,
             nonlinearity=lasagne.nonlinearities.softmax)
 
+    masks = [mask_in, mask_hid1, mask_hid2]
     # Each layer is linked to its incoming layer(s), so we only need to pass
     # the output layer to give access to a network in Lasagne:
-    return l_out
+    return l_out, masks
 
 if __name__ == "__main__":
     main()
