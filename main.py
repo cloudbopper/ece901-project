@@ -93,6 +93,7 @@ def main():
     parser.add_argument("-num_epochs", default=500, type=int)
 
     args = parser.parse_args()
+    theano.config.exception_verbosity = "high"
     pipeline(args)
 
 
@@ -333,45 +334,54 @@ def build_mlp(input_var=None, mask_inputs=False):
     # Input layer, specifying the expected input shape of the network
     # (unspecified batchsize, 1 channel, 28 rows and 28 columns) and
     # linking it to the given Theano variable `input_var`, if any:
+    
     l_in = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),
-                                     input_var=input_var)
+                                     input_var=input_var,
+                                     name="%d_%s" % (TM.network_count, "l_in"))
 
     mask_in = None
     if mask_inputs:
         mask_in = T.ltensor3()
     # Apply 20% dropout to the input data:
-    l_in_drop = dropout.DropoutLayerOverlapping(l_in, mask=mask_in, p=0.2)
+    l_in_drop = dropout.DropoutLayerOverlapping(l_in, mask=mask_in, p=0.2,
+                                                name="%d_%s" % (TM.network_count, "l_in_drop"))
 
     # Add a fully-connected layer of 800 units, using the linear rectifier, and
     # initializing weights with Glorot's scheme (which is the default anyway):
     l_hid1 = lasagne.layers.DenseLayer(
             l_in_drop, num_units=800,
             nonlinearity=lasagne.nonlinearities.rectify,
-            W=lasagne.init.GlorotUniform())
+            W=lasagne.init.GlorotUniform(),
+            name="%d_%s" % (TM.network_count, "l_hid1"))
 
     # We'll now add dropout of 50%:
     mask_hid1 = None
     if mask_inputs:
         mask_hid1 = T.lvector()
-    l_hid1_drop = dropout.DropoutLayerOverlapping(l_hid1, mask=mask_hid1, p=0.5)
+    l_hid1_drop = dropout.DropoutLayerOverlapping(l_hid1, mask=mask_hid1, p=0.5,
+                                                  name="%d_%s" % (TM.network_count, "l_hid1_drop"))
 
     # Another 800-unit layer:
     l_hid2 = lasagne.layers.DenseLayer(
             l_hid1_drop, num_units=800,
-            nonlinearity=lasagne.nonlinearities.rectify)
+            nonlinearity=lasagne.nonlinearities.rectify,
+            name="%d_%s" % (TM.network_count, "l_hid2"))
 
     # 50% dropout again:
     mask_hid2 = None
     if mask_inputs:
         mask_hid2 = T.lvector()
-    l_hid2_drop = dropout.DropoutLayerOverlapping(l_hid2, mask=mask_hid2, p=0.5)
+    l_hid2_drop = dropout.DropoutLayerOverlapping(l_hid2, mask=mask_hid2, p=0.5,
+                                                  name="%d_%s" % (TM.network_count, "l_hid2_drop"))
 
     # Finally, we'll add the fully-connected output layer, of 10 softmax units:
     l_out = lasagne.layers.DenseLayer(
             l_hid2_drop, num_units=10,
-            nonlinearity=lasagne.nonlinearities.softmax)
+            nonlinearity=lasagne.nonlinearities.softmax,
+            name="%d_%s" % (TM.network_count, "l_out"))
 
     masks = [mask_in, mask_hid1, mask_hid2]
+    TM.network_count += 1
     # Each layer is linked to its incoming layer(s), so we only need to pass
     # the output layer to give access to a network in Lasagne:
     return l_out, masks

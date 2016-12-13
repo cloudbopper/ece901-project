@@ -5,6 +5,7 @@ import threading
 class TM(object):
     """Thread manager"""
     # pylint: disable=too-few-public-methods
+    network_count = 0
     num_workers = 0
     train_err = 0
     updating = 0
