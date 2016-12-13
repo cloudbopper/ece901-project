@@ -8,10 +8,8 @@ import threading
 from urllib import urlretrieve
 
 import lasagne
-from lasagne.random import get_rng
 import numpy as np
 import theano
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 import theano.tensor as T
 
 import dropout
@@ -22,14 +20,14 @@ from thread_manager import TM
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
     # pylint: disable=no-self-use
-    def __init__(self, read_fn, write_fn, train_fn, mask_fn, tid, inputs, targets):
+    def __init__(self, read_fn, write_fn, train_fn, dropout_mask, tid, inputs, targets):
         # pylint: disable=too-many-arguments
         threading.Thread.__init__(self)
         self.tid = tid
         self.train_fn = train_fn
         self.read_fn = read_fn
         self.write_fn = write_fn
-        self.mask_fn = mask_fn
+        self.dropout_mask = dropout_mask
         self.inputs = inputs
         self.targets = targets
 
@@ -62,7 +60,7 @@ class WorkerThread(threading.Thread):
 
     def train(self):
         """Train and update overall training error"""
-        out = self.train_fn(self.tid)(self.inputs, self.targets, *self.mask_fn(self.tid))
+        out = self.train_fn(self.tid)(self.inputs, self.targets, *self.dropout_mask)
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
@@ -132,7 +130,8 @@ def pipeline(args):
             TM.worker_cv.release()
             tid = tids.popleft()
             tids.append(tid)
-            worker = WorkerThread(read_fn, write_fn, train_fn, mask_fn, tid, inputs, targets)
+            dropout_mask = mask_fn(tid)
+            worker = WorkerThread(read_fn, write_fn, train_fn, dropout_mask, tid, inputs, targets)
             worker.start()
         TM.worker_cv.acquire()
         while TM.num_workers > 0:
@@ -203,7 +202,7 @@ def gen_computational_graphs(args):
         # and returning the corresponding training loss:
         train_fn = theano.function([input_var, target_var] + masks, loss, updates=updates)
         train_fns.append(train_fn)
-    train_fn = lambda(tid): train_fns[tid]
+    train_fn = lambda tid: train_fns[tid]
 
     # Compile a second function computing the validation loss and accuracy:
     input_var = T.tensor4('input')
@@ -239,10 +238,8 @@ def gen_computational_graphs(args):
 
 def gen_mask_functions(network):
     """Returns dropout mask-generating functions"""
-    rng = RandomStreams(get_rng().randint(1, 2147462579))
     layers = lasagne.layers.get_all_layers(network)
     mask_fns = []
-    one = T.constant(1)
     for layer in layers:
         if isinstance(layer, dropout.DropoutLayerOverlapping):
             # compute size of layer; use attribute p of layer for dropout rate
@@ -251,8 +248,8 @@ def gen_mask_functions(network):
                 mask_shape = layer.input_layer.output_shape[1:]
             else:
                 mask_shape = (layer.input_layer.num_units,)
-            mask = rng.binomial(mask_shape, p=(one-layer.p))
-            func = theano.function([], mask)
+            # pylint: disable=cell-var-from-loop
+            func = lambda p=layer.p, shape=mask_shape: np.random.binomial(1, (1-p), shape)
             mask_fns.append(func)
     def mask_fn(tid):
         """Returns function that computes dropout mask"""
