@@ -83,7 +83,8 @@ def main():
                         "each worker thread", required=True, type=int)
     parser.add_argument("-dropout_type", help="type of dropout", required=True,
                         choices=["disjoint", "overlapping"])
-    parser.add_argument("-dropout_rate", required=True)
+    parser.add_argument("-input_dropout_rate", type=float, default=0.2)
+    parser.add_argument("-dropout_rate", type=float, default=0.5)
     parser.add_argument("-synchronize_workers", help="master waits for all workers to "
                         "finish the last round of minibatch SGD before starting another "
                         "round; always enabled for disjoint dropout", action="store_true")
@@ -128,7 +129,7 @@ def pipeline(args):
         batch_generator = iterate_minibatches(X_train, y_train, args.batch_size, shuffle=True)
         epoch_complete = False
         while True:
-            dropout_masks = [mask_fn() for _ in range(args.threads)]
+            dropout_masks = mask_fn()
             for tid in range(args.threads):
                 try:
                     batch = batch_generator.next()
@@ -188,7 +189,7 @@ def gen_computational_graphs(args):
         # Prepare Theano variables for inputs and targets
         input_var = T.tensor4('inputs_%d' % tid)
         target_var = T.ivector('targets_%d' % tid)
-        network, masks = build_mlp(input_var, mask_inputs=True)
+        network, masks = build_mlp(args, input_var, mask_inputs=True)
 
         # Create a loss expression for training
         prediction = lasagne.layers.get_output(network)
@@ -214,7 +215,7 @@ def gen_computational_graphs(args):
     # Compile a second function computing the validation loss and accuracy:
     input_var = T.tensor4('input')
     target_var = T.ivector('targets')
-    network, _ = build_mlp(input_var)
+    network, _ = build_mlp(args, input_var)
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -245,23 +246,46 @@ def gen_computational_graphs(args):
 
 def gen_mask_functions(args, network):
     """Returns dropout mask-generating functions"""
-    layers = lasagne.layers.get_all_layers(network)
     mask_fns = []
-    for layer in layers:
-        if isinstance(layer, dropout.DropoutLayer):
-            # compute size of layer; use attribute p of layer for dropout rate
-            # workaround to set mask shape correctly regardless of input layer
-            if isinstance(layer.input_layer, lasagne.layers.InputLayer):
-                mask_shape = layer.input_layer.output_shape[1:]
-            else:
-                mask_shape = (layer.input_layer.num_units,)
-            # pylint: disable=cell-var-from-loop
-            func = lambda p=layer.p, shape=mask_shape: np.random.binomial(1, (1-p), shape)
-            mask_fns.append(func)
-    def mask_fn():
-        """Returns function that computes dropout mask"""
-        return [func() for func in mask_fns]
-    return mask_fn
+    layers = lasagne.layers.get_all_layers(network)
+    if args.dropout_type == "overlapping" or args.threads == 1:
+        for layer in layers:
+            if isinstance(layer, dropout.DropoutLayer):
+                # workaround to set mask shape correctly regardless of input layer
+                if isinstance(layer.input_layer, lasagne.layers.InputLayer):
+                    mask_shape = layer.input_layer.output_shape[1:]
+                else:
+                    mask_shape = (layer.input_layer.num_units,)
+                # pylint: disable=cell-var-from-loop
+                func = lambda p=layer.p, shape=mask_shape: np.random.binomial(1, (1-p), shape)
+                mask_fns.append(func)
+        return lambda: [[func() for func in mask_fns] for _ in range(args.threads)]
+    else:
+        # Disjoint dropout
+        retain_prob = 1./args.threads
+        retain_prob = min(retain_prob, 1 - args.dropout_rate)
+        mask_fns = []
+        for layer in layers:
+            if isinstance(layer, dropout.DropoutLayer):
+                if isinstance(layer.input_layer, lasagne.layers.InputLayer):
+                    # overlaps in input layer OK - parameters should still be disjoint
+                    mask_shape = layer.input_layer.output_shape[1:]
+                    tfs = [None] * args.threads
+                    for tid in range(args.threads):
+                        tfs[tid] = lambda p=layer.p, s=mask_shape: np.random.binomial(1, (1-p), s)
+                    # pylint: disable=cell-var-from-loop
+                    mask_fns.append(lambda: [tfs[tid]() for tid in range(args.threads)])
+                else:
+                    mask_shape = (layer.input_layer.num_units,)
+                    def func(shape=mask_shape):
+                        """Computes mask for this layer for all threads"""
+                        mask_all = np.random.multinomial(1, [retain_prob] * args.threads, shape)
+                        masks = [None] * args.threads
+                        for tid in range(args.threads):
+                            masks[tid] = mask_all[:, tid]
+                        return masks
+                    mask_fns.append(func)
+        return lambda: np.transpose([func() for func in mask_fns])
 
 
 def load_dataset():
@@ -330,7 +354,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
-def build_mlp(input_var=None, mask_inputs=False):
+def build_mlp(args, input_var=None, mask_inputs=False):
     """Build MLP model"""
     # pylint: disable=bad-continuation
     # This creates an MLP of two hidden layers of 800 units each, followed by
@@ -349,7 +373,7 @@ def build_mlp(input_var=None, mask_inputs=False):
     if mask_inputs:
         mask_in = T.ltensor3()
     # Apply 20% dropout to the input data:
-    l_in_drop = dropout.DropoutLayer(l_in, mask=mask_in, p=0.0,
+    l_in_drop = dropout.DropoutLayer(l_in, mask=mask_in, p=args.input_dropout_rate,
                                      name="%d_%s" % (TM.network_count, "l_in_drop"))
 
     # Add a fully-connected layer of 800 units, using the linear rectifier, and
@@ -364,7 +388,7 @@ def build_mlp(input_var=None, mask_inputs=False):
     mask_hid1 = None
     if mask_inputs:
         mask_hid1 = T.lvector()
-    l_hid1_drop = dropout.DropoutLayer(l_hid1, mask=mask_hid1, p=0.5,
+    l_hid1_drop = dropout.DropoutLayer(l_hid1, mask=mask_hid1, p=args.dropout_rate,
                                        name="%d_%s" % (TM.network_count, "l_hid1_drop"))
 
     # Another 800-unit layer:
@@ -377,7 +401,7 @@ def build_mlp(input_var=None, mask_inputs=False):
     mask_hid2 = None
     if mask_inputs:
         mask_hid2 = T.lvector()
-    l_hid2_drop = dropout.DropoutLayer(l_hid2, mask=mask_hid2, p=0.5,
+    l_hid2_drop = dropout.DropoutLayer(l_hid2, mask=mask_hid2, p=args.dropout_rate,
                                        name="%d_%s" % (TM.network_count, "l_hid2_drop"))
 
     # Finally, we'll add the fully-connected output layer, of 10 softmax units:
