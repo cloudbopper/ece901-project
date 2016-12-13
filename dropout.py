@@ -14,8 +14,6 @@ class DropoutLayerOverlapping(lasagne.layers.DropoutLayer):
         # pylint: disable=redefined-builtin,unused-argument
         if deterministic or self.p == 0:
             return input
-        elif self.mask:
-            return input * self.mask
         else:
             # Using theano constant to prevent upcasting
             one = T.constant(1)
@@ -23,6 +21,9 @@ class DropoutLayerOverlapping(lasagne.layers.DropoutLayer):
             retain_prob = one - self.p
             if self.rescale:
                 input /= retain_prob
+
+            if self.mask:
+                return input * self.mask
 
             # use nonsymbolic shape for dropout mask if possible
             mask_shape = self.input_shape
