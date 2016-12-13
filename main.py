@@ -1,7 +1,6 @@
 """Multithreaded dropout experiment"""
 
 import argparse
-from collections import deque
 import os
 import time
 import threading
@@ -17,19 +16,17 @@ from thread_manager import TM
 
 # pylint: disable=superfluous-parens
 
+
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
     # pylint: disable=no-self-use
-    def __init__(self, read_fn, write_fn, train_fn, dropout_mask, tid, inputs, targets):
-        # pylint: disable=too-many-arguments
+    def __init__(self, tid, read_fn, write_fn, train_fn):
         threading.Thread.__init__(self)
         self.tid = tid
-        self.train_fn = train_fn
         self.read_fn = read_fn
         self.write_fn = write_fn
-        self.dropout_mask = dropout_mask
-        self.inputs = inputs
-        self.targets = targets
+        self.train_fn = train_fn
+        self.daemon = True
 
     def pre_update(self):
         """Pre-update CV management"""
@@ -58,23 +55,21 @@ class WorkerThread(threading.Thread):
         self.write_fn(self.tid)
         self.post_update()
 
-    def train(self):
+    def train(self, inputs, targets, dropout_mask):
         """Train and update overall training error"""
-        out = self.train_fn(self.tid)(self.inputs, self.targets, *self.dropout_mask)
+        out = self.train_fn(self.tid)(inputs, targets, *dropout_mask)
         TM.err_lock.acquire()
         TM.train_err += out
         TM.err_lock.release()
 
     def run(self):
         """Run worker thread"""
-        self.read_params()
-        self.train()
-        self.write_params()
-        # Remove worker from active pool
-        TM.worker_cv.acquire()
-        TM.num_workers -= 1
-        TM.worker_cv.notify()
-        TM.worker_cv.release()
+        while True:
+            inputs, targets, dropout_mask = TM.pool.get()
+            self.read_params()
+            self.train(inputs, targets, dropout_mask)
+            self.write_params()
+            TM.pool.task_done()
 
 
 def main():
@@ -97,7 +92,6 @@ def main():
     pipeline(args)
 
 
-
 def pipeline(args):
     """Dropout experiment pipeline
     Note: currently only implements overlapping dropout
@@ -117,27 +111,21 @@ def pipeline(args):
     print("Starting training...")
     for epoch in range(args.num_epochs):
         # In each epoch, we do a full pass over the training data:
+        start_time = time.time()
         TM.train_err = 0
         train_batches = 0
-        start_time = time.time()
-        tids = deque(range(args.threads))
+        TM.init_pool(args.threads)
+        # Launch worker threads
+        for tid in range(args.threads):
+            worker = WorkerThread(tid, read_fn, write_fn, train_fn)
+            worker.start()
+        # Iterate over training set
         for batch in iterate_minibatches(X_train, y_train, args.batch_size, shuffle=True):
             train_batches += 1
             inputs, targets = batch
-            TM.worker_cv.acquire()
-            while TM.num_workers >= args.threads:
-                TM.worker_cv.wait()
-            TM.num_workers += 1
-            TM.worker_cv.release()
-            tid = tids.popleft()
-            tids.append(tid)
-            dropout_mask = mask_fn(tid)
-            worker = WorkerThread(read_fn, write_fn, train_fn, dropout_mask, tid, inputs, targets)
-            worker.start()
-        TM.worker_cv.acquire()
-        while TM.num_workers > 0:
-            TM.worker_cv.wait()
-        TM.worker_cv.release()
+            dropout_mask = mask_fn()
+            TM.pool.put((inputs, targets, dropout_mask))
+        TM.pool.join()
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
@@ -252,7 +240,7 @@ def gen_mask_functions(network):
             # pylint: disable=cell-var-from-loop
             func = lambda p=layer.p, shape=mask_shape: np.random.binomial(1, (1-p), shape)
             mask_fns.append(func)
-    def mask_fn(tid):
+    def mask_fn():
         """Returns function that computes dropout mask"""
         return [func() for func in mask_fns]
     return mask_fn
@@ -334,7 +322,7 @@ def build_mlp(input_var=None, mask_inputs=False):
     # Input layer, specifying the expected input shape of the network
     # (unspecified batchsize, 1 channel, 28 rows and 28 columns) and
     # linking it to the given Theano variable `input_var`, if any:
-    
+
     l_in = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),
                                      input_var=input_var,
                                      name="%d_%s" % (TM.network_count, "l_in"))
