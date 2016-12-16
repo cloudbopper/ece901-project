@@ -12,6 +12,7 @@ import theano
 import theano.tensor as T
 
 import dropout
+import update
 from thread_manager import TM
 
 # pylint: disable=superfluous-parens
@@ -27,6 +28,8 @@ class WorkerThread(threading.Thread):
         self.write_fn = write_fn
         self.train_fn = train_fn
         self.daemon = True
+        self.iparams = None
+        self.oparams = None
 
     def pre_update(self):
         """Pre-update CV management"""
@@ -46,13 +49,13 @@ class WorkerThread(threading.Thread):
     def read_params(self):
         """Read per-thread params from global params"""
         self.pre_update()
-        self.read_fn(self.tid)
+        self.iparams = self.read_fn(self.tid)
         self.post_update()
 
     def write_params(self):
         """Write per-thread params into global params"""
         self.pre_update()
-        self.write_fn(self.tid)
+        self.oparams = self.write_fn(self.tid)
         self.post_update()
 
     def train(self, inputs, targets, dropout_mask):
@@ -88,6 +91,9 @@ def main():
     parser.add_argument("-synchronize_workers", help="master waits for all workers to "
                         "finish the last round of minibatch SGD before starting another "
                         "round; always enabled for disjoint dropout", action="store_true")
+    parser.add_argument("-debug", action="store_true")
+    parser.add_argument("-core_iterations", help="number of iterations to run on a single core"
+                        " with the network fixed", type=int, default=1)
 
     parser.add_argument("-num_epochs", default=500, type=int)
 
@@ -123,9 +129,11 @@ def pipeline(args):
         train_batches = 0
         TM.init_pool(args.threads)
         # Launch worker threads
+        workers = [None] * args.threads
         for tid in range(args.threads):
             worker = WorkerThread(tid, read_fn, write_fn, train_fn)
             worker.start()
+            workers[tid] = worker
         batch_generator = iterate_minibatches(X_train, y_train, args.batch_size, shuffle=True)
         epoch_complete = False
         while True:
@@ -143,6 +151,9 @@ def pipeline(args):
                 break
             if args.synchronize_workers:
                 TM.pool.join()
+            # Validate disjoint dropout
+            if args.debug:
+                assert validate_disjoint_dropout(args, workers)
         TM.pool.join()
         # And a full pass over the validation data:
         val_err = 0
@@ -179,6 +190,25 @@ def pipeline(args):
         test_acc / test_batches * 100))
 
 
+def validate_disjoint_dropout(args, workers):
+    """Validate disjoint dropout producing disjoint updates"""
+    if args.dropout_type != "disjoint":
+        return True
+    num_params = len(workers[0].oparams)
+    diffs = []
+    for worker in workers:
+        diffs.append([])
+        for idx in range(num_params):
+            diffs[-1].append(worker.oparams[idx].get_value() - worker.iparams[idx].get_value())
+    for idx1, _ in enumerate(workers):
+        for idx2, _ in enumerate(workers):
+            if idx1 == idx2:
+                continue
+            for idx in range(num_params):
+                if np.count_nonzero(np.multiply(diffs[idx1][idx], diffs[idx2][idx])) > 0:
+                    return False
+    return True
+
 def gen_computational_graphs(args):
     """Generates Theano functions for training/testing the network"""
     # pylint: disable=too-many-locals
@@ -199,11 +229,9 @@ def gen_computational_graphs(args):
         # Create update expressions for training
         params = lasagne.layers.get_all_params(network, trainable=True)
         params_per_thread.append(params)
-        updates = lasagne.updates.nesterov_momentum(loss, params,
-                                                    learning_rate=0.01,
-                                                    momentum=0.9)
-        # TODO: remove following (nesterov momentum performs significantly better)
-        # updates = sgd(loss, params, learning_rate=0.01)
+        updates = update.nesterov_momentum(loss, params,
+                                           learning_rate=0.01,
+                                           momentum=0.9)
 
         # Compile a function performing a training step on a mini-batch
         # and returning the corresponding training loss:
