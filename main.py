@@ -12,7 +12,6 @@ import theano
 import theano.tensor as T
 
 import dropout
-import update
 from thread_manager import TM
 
 # pylint: disable=superfluous-parens
@@ -31,6 +30,7 @@ class WorkerThread(threading.Thread):
         self.initial_weights = None
         self.tparams = None
         self.increments = None
+        self.age = 0
 
     def pre_update(self):
         """Pre-update CV management"""
@@ -72,6 +72,7 @@ class WorkerThread(threading.Thread):
     def run(self):
         """Run worker thread"""
         while True:
+            self.age += 1
             inputs, targets, dropout_mask = TM.pool.get()
             self.read_params()
             self.train(inputs, targets, dropout_mask)
@@ -204,7 +205,9 @@ def validate_disjoint_dropout(args, workers):
         diffs.append(worker.increments)
     for idx1, _ in enumerate(workers):
         for idx2, _ in enumerate(workers):
-            if idx1 == idx2:
+            if idx1 == idx2 or workers[idx1].age != workers[idx2].age:
+                # Introduced age due to condition where 1 worker does the work of
+                # multiple workers in one master iteration
                 continue
             for lidx in range(len(diffs[0]) - 1):
                 # Last set of parameters corresponds to bias weights on output layer:
@@ -233,9 +236,10 @@ def gen_computational_graphs(args):
         # Create update expressions for training
         params = lasagne.layers.get_all_params(network, trainable=True)
         params_per_thread.append(params)
-        updates = update.nesterov_momentum(loss, params,
-                                           learning_rate=0.01,
-                                           momentum=0.9)
+        updates = lasagne.updates.sgd(loss, params, learning_rate=0.01)
+        # updates = update.nesterov_momentum(loss, params,
+        #                                    learning_rate=0.01,
+        #                                    momentum=0.9)
 
         # Compile a function performing a training step on a mini-batch
         # and returning the corresponding training loss:
