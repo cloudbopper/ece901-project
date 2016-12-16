@@ -20,7 +20,7 @@ from thread_manager import TM
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
-    # pylint: disable=no-self-use
+    # pylint: disable=no-self-use,too-many-instance-attributes
     def __init__(self, tid, read_fn, write_fn, train_fn):
         threading.Thread.__init__(self)
         self.tid = tid
@@ -28,8 +28,9 @@ class WorkerThread(threading.Thread):
         self.write_fn = write_fn
         self.train_fn = train_fn
         self.daemon = True
-        self.iparams = None
-        self.oparams = None
+        self.initial_weights = None
+        self.tparams = None
+        self.increments = None
 
     def pre_update(self):
         """Pre-update CV management"""
@@ -49,13 +50,16 @@ class WorkerThread(threading.Thread):
     def read_params(self):
         """Read per-thread params from global params"""
         self.pre_update()
-        self.iparams = self.read_fn(self.tid)
+        self.tparams = self.read_fn(self.tid)
         self.post_update()
+        self.initial_weights = [np.copy(tparam.get_value()) for tparam in self.tparams]
 
     def write_params(self):
         """Write per-thread params into global params"""
+        self.increments = ([self.tparams[idx].get_value() - self.initial_weights[idx]
+                            for idx, _ in enumerate(self.tparams)])
         self.pre_update()
-        self.oparams = self.write_fn(self.tid)
+        self.write_fn(self.increments)
         self.post_update()
 
     def train(self, inputs, targets, dropout_mask):
@@ -106,10 +110,11 @@ def pipeline(args):
     Note: currently only implements overlapping dropout
     """
     # TODO: fragment function more
-    # pylint: disable=too-many-locals,invalid-name
+    # pylint: disable=too-many-locals,invalid-name,too-many-statements
     theano.config.exception_verbosity = "high"
     if args.dropout_type == "disjoint":
         args.synchronize_workers = True
+        args.dropout_rate = 1 - 1./args.threads
 
     # Load the dataset
     print("Loading data...")
@@ -151,9 +156,9 @@ def pipeline(args):
                 break
             if args.synchronize_workers:
                 TM.pool.join()
-            # Validate disjoint dropout
-            if args.debug:
-                assert validate_disjoint_dropout(args, workers)
+                # Validate disjoint dropout
+                if args.debug:
+                    assert validate_disjoint_dropout(args, workers)
         TM.pool.join()
         # And a full pass over the validation data:
         val_err = 0
@@ -194,18 +199,17 @@ def validate_disjoint_dropout(args, workers):
     """Validate disjoint dropout producing disjoint updates"""
     if args.dropout_type != "disjoint":
         return True
-    num_params = len(workers[0].oparams)
     diffs = []
     for worker in workers:
-        diffs.append([])
-        for idx in range(num_params):
-            diffs[-1].append(worker.oparams[idx].get_value() - worker.iparams[idx].get_value())
+        diffs.append(worker.increments)
     for idx1, _ in enumerate(workers):
         for idx2, _ in enumerate(workers):
             if idx1 == idx2:
                 continue
-            for idx in range(num_params):
-                if np.count_nonzero(np.multiply(diffs[idx1][idx], diffs[idx2][idx])) > 0:
+            for lidx in range(len(diffs[0]) - 1):
+                # Last set of parameters corresponds to bias weights on output layer:
+                # these will not be disjoint, so ignore
+                if np.count_nonzero(np.multiply(diffs[idx1][lidx], diffs[idx2][lidx])) > 0:
                     return False
     return True
 
@@ -265,12 +269,10 @@ def gen_computational_graphs(args):
         for idx, _ in enumerate(gparams):
             tparams[idx].set_value(gparams[idx].get_value())
         return tparams
-    def write_fn(tid):
-        """Update global params from per-thread params"""
-        tparams = params_per_thread[tid]
+    def write_fn(increments):
+        """Update global params from worker increments"""
         for idx, _ in enumerate(gparams):
-            gparams[idx].set_value(tparams[idx].get_value())
-        return tparams
+            gparams[idx].set_value(gparams[idx].get_value() + increments[idx])
     return read_fn, write_fn, train_fn, val_fn, network
 
 
