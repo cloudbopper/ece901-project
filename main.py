@@ -264,11 +264,13 @@ def gen_computational_graphs(args):
         tparams = params_per_thread[tid]
         for idx, _ in enumerate(gparams):
             tparams[idx].set_value(gparams[idx].get_value())
+        return tparams
     def write_fn(tid):
         """Update global params from per-thread params"""
         tparams = params_per_thread[tid]
         for idx, _ in enumerate(gparams):
             gparams[idx].set_value(tparams[idx].get_value())
+        return tparams
     return read_fn, write_fn, train_fn, val_fn, network
 
 
