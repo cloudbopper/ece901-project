@@ -19,6 +19,8 @@ from sgd import sgd
 from thread_manager import TM
 import Plots
 
+lock = threading.Lock()
+
 # pylint: disable=superfluous-parens
 
 
@@ -38,7 +40,9 @@ class WorkerThread2(threading.Thread):
         # Read and Train 
         self.read_fn(self.tid)
         out = self.train_fn(self.inputs, self.targets)
-        TM.train_err += out
+        #TM.train_err += out
+        with lock:		
+            TM.train_err += out
         self.retVal = True
         TM.retVals[self.tid] = True 
  
@@ -255,7 +259,7 @@ def gen_computational_graphs2(args):
         
         # Create neural network model (depending on first command line parameter)
         depth = 2
-        width = 20
+        width = 100
         drop_in = None
         drop_hid = 0.5
         network = build_custom_mlp(input_var, int(depth), int(width), drop_in, float(drop_hid))
@@ -285,7 +289,7 @@ def gen_computational_graphs2(args):
     input_var = T.tensor4('input')
     target_var = T.ivector('targets')
     depth = 2
-    width = 20
+    width = 100
     drop_in = None
     drop_hid = 0.5
     network = build_custom_mlp(input_var, int(depth), int(width), drop_in, float(drop_hid))
