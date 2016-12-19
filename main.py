@@ -73,9 +73,10 @@ class WorkerThread(threading.Thread):
         """Run worker thread"""
         while True:
             self.age += 1
-            inputs, targets, dropout_mask = TM.pool.get()
+            batches, dropout_mask = TM.pool.get()
             self.read_params()
-            self.train(inputs, targets, dropout_mask)
+            for inputs, targets in batches:
+                self.train(inputs, targets, dropout_mask)
             self.write_params()
             TM.pool.task_done()
 
@@ -85,8 +86,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-threads", help="number of threads to launch",
                         required=True, type=int)
-    parser.add_argument("-worker_iterations", help="number of iterations to run"
-                        " each worker for", required=True, type=int)
     parser.add_argument("-batch_size", help="size of batch operated upon by "
                         "each worker thread", required=True, type=int)
     parser.add_argument("-dropout_type", help="type of dropout", required=True,
@@ -97,8 +96,8 @@ def main():
                         "finish the last round of minibatch SGD before starting another "
                         "round; always enabled for disjoint dropout", action="store_true")
     parser.add_argument("-debug", action="store_true")
-    parser.add_argument("-core_iterations", help="number of iterations to run on a single core"
-                        " with the network fixed", type=int, default=1)
+    parser.add_argument("-worker_iterations", help="number of iterations to run on a single worker"
+                        " with a fixed network", type=int, default=1)
 
     parser.add_argument("-num_epochs", default=500, type=int)
 
@@ -145,13 +144,18 @@ def pipeline(args):
         while True:
             dropout_masks = mask_fn()
             for tid in range(args.threads):
-                try:
-                    batch = batch_generator.next()
-                    train_batches += 1
-                    inputs, targets = batch
-                    TM.pool.put((inputs, targets, dropout_masks[tid]))
-                except StopIteration:
-                    epoch_complete = True
+                tbatches = []
+                for _ in range(args.worker_iterations):
+                    try:
+                        batch = batch_generator.next()
+                        tbatches.append(batch)
+                        train_batches += 1
+                    except StopIteration:
+                        epoch_complete = True
+                        break
+                if tbatches:
+                    TM.pool.put((tbatches, dropout_masks[tid]))
+                if epoch_complete:
                     break
             if epoch_complete:
                 break
