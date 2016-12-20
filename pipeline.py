@@ -196,6 +196,10 @@ def pipeline(args):
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
         print("  validation accuracy:\t\t{:.2f} %".format(val_pc_accs[-1]))
 
+        # Early stopping
+        if val_pc_accs[-1] > args.term_val_acc:
+            break
+
     # After training, we compute and print the test error:
     test_err = 0
     test_acc = 0

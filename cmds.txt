@@ -4,4 +4,7 @@ python pipeline.py -threads 2 -worker_iterations 1 -batch_size 500 -dropout_type
 
 
 
-python experiment.py -type learningcurves -title "Learning curves for disjoint dropout" -output_filename "data/learning_curves_disjoint_dropout" -dropout_type disjoint
+python experiment.py -type learningcurves
+python experiment.py -type speedup_time
+python experiment.py -type batch_downsizing
+python experiment.py -type worker_iterations
