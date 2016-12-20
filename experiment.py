@@ -14,7 +14,7 @@ def main():
                         choices=["learningcurves"])
     parser.add_argument("-output_filename", required=True)
     parser.add_argument("-title", required=True)
-    parser.add_argument("-num_trials", default=1, type=int)
+    parser.add_argument("-num_trials", default=2, type=int)
 
     parser.add_argument("-batch_size", default=500, type=int)
     parser.add_argument("-dropout_type", help="type of dropout", required=True,
@@ -22,7 +22,7 @@ def main():
     parser.add_argument("-dropout_rate", type=float, default=0.5)
     parser.add_argument("-synchronize_workers", action="store_true")
     parser.add_argument("-worker_iterations", type=int, default=1)
-    parser.add_argument("-num_epochs", default=3, type=int)
+    parser.add_argument("-num_epochs", default=15, type=int)
     parser.add_argument("-term_val_acc", default=100, type=int)
 
     args = parser.parse_args()
@@ -56,9 +56,13 @@ def main():
             train_losses_avg /= args.num_trials
             val_pc_accs_avg /= args.num_trials
             test_pc_acc_avg /= args.num_trials
-            plt.plot(train_losses_avg, range(1, args.num_epochs + 1),
+            plt.plot(range(1, args.num_epochs + 1), val_pc_accs_avg,
                      label=("Number of threads: %d" % (num_threads)))
             plt.title(args.title)
+            plt.xlabel("Number of epochs")
+            plt.ylabel("Validation set accuracy")
+            plt.xlim([0, args.num_epochs + 1])
+            plt.ylim([0., 100.])
             plt.legend(loc='upper right')
             plt.savefig(args.output_filename)
 
