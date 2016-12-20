@@ -1,3 +1,7 @@
-python main.py -threads 1 -worker_iterations 1 -batch_size 500 -dropout_type disjoint -dropout_rate .5 -num_epochs 10
+python pipeline.py -threads 1 -worker_iterations 1 -batch_size 500 -dropout_type disjoint -dropout_rate .5 -num_epochs 10
 
-python main.py -threads 2 -worker_iterations 1 -batch_size 500 -dropout_type disjoint -dropout_rate .5 -num_epochs 10
+python pipeline.py -threads 2 -worker_iterations 1 -batch_size 500 -dropout_type disjoint -dropout_rate .5 -num_epochs 10
+
+
+
+python experiments.py -type learningcurves -title "Learning curves for disjoint dropout" -output_filename "data/learning_curves_disjoint_dropout"

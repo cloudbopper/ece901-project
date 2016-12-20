@@ -98,8 +98,9 @@ def main():
     parser.add_argument("-debug", action="store_true")
     parser.add_argument("-worker_iterations", help="number of iterations to run on a single worker"
                         " with a fixed network", type=int, default=1)
-
     parser.add_argument("-num_epochs", default=500, type=int)
+    parser.add_argument("-term_val_acc", help="level of validation set accuracy in % after "
+                        "reaching which algorithm will terminate", default=100, type=int)
 
     args = parser.parse_args()
     pipeline(args)
@@ -110,7 +111,7 @@ def pipeline(args):
     Note: currently only implements overlapping dropout
     """
     # TODO: fragment function more
-    # pylint: disable=too-many-locals,invalid-name,too-many-statements
+    # pylint: disable=too-many-locals,invalid-name,too-many-statements,too-many-branches
     theano.config.exception_verbosity = "high"
     if args.dropout_type == "disjoint":
         args.synchronize_workers = True
@@ -127,6 +128,10 @@ def pipeline(args):
 
     # Finally, launch the training loop.
     print("Starting training...")
+    epoch_times = []
+    train_losses = []
+    val_pc_accs = []
+
     for epoch in range(args.num_epochs):
         # In each epoch, we do a full pass over the training data:
         start_time = time.time()
@@ -177,16 +182,20 @@ def pipeline(args):
             val_batches += 1
 
         # Then we print the results for this epoch:
+        epoch_times.append(time.time() - start_time)
+        train_losses.append(TM.train_err / train_batches)
+        val_pc_accs.append(val_acc / val_batches * 100)
+
         print("Epoch {} of {} took {:.3f}s".format(
-            epoch + 1, args.num_epochs, time.time() - start_time))
-        print("  training loss:\t\t{:.6f}".format(TM.train_err / train_batches))
+            epoch + 1, args.num_epochs, epoch_times[-1]))
+        print("  training loss:\t\t{:.6f}".format(train_losses[-1]))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
-        print("  validation accuracy:\t\t{:.2f} %".format(
-            val_acc / val_batches * 100))
+        print("  validation accuracy:\t\t{:.2f} %".format(val_pc_accs[-1]))
 
     # After training, we compute and print the test error:
     test_err = 0
     test_acc = 0
+    test_pc_acc = 0
     test_batches = 0
     for batch in iterate_minibatches(X_test, y_test, 500, shuffle=False):
         inputs, targets = batch
@@ -194,10 +203,12 @@ def pipeline(args):
         test_err += err
         test_acc += acc
         test_batches += 1
+
+    test_pc_acc = (test_acc / test_batches * 100)
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
-    print("  test accuracy:\t\t{:.2f} %".format(
-        test_acc / test_batches * 100))
+    print("  test accuracy:\t\t{:.2f} %".format(test_pc_acc))
+    return epoch_times, train_losses, val_pc_accs, test_pc_acc
 
 
 def validate_disjoint_dropout(args, workers):

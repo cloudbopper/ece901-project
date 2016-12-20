@@ -1,0 +1,22 @@
+Best perf: No dropout
+
+Disjoint dropout
+- Re-instated SGD instead of Nesterov momentum because momentum updates violate disjoincy
+    - May not matter in practice
+- Biases of output layer not disjoint
+- 2 threads perform poorer than single-threaded when network is small (2 hidden layers with 20 units each) - maybe because one of the two threads end up with dropout significantly above 50%
+
+Theory works with sigmoid instead of relu
+- Sigmoid appears to perform much worse than relu (~60% vs ~90% in 10 epochs)
+- Sigmoid also has poorer perf the more the number of threads
+
+- Averaging case: If the average is computed for all parameters over the number of threads, instead of being computed separately for each parameter based on its collision count, then it simply corresponds to scaling down the learning rate by the number of threads
+
+UPDATE: I had a bug in the code that writes the network parameter learned by workers to the master thread - the writes were overwrites instead of increments. After fixing it, the disjoint dropout case with 2 threads seems to converge with the same rate as the single-threaded case
+
+
+Figures (preferably generate averages for each) (all 3: overlapping no-waiting, overlapping waiting and disjoint):
+- Learning curves for each thread-count (training error vs. epochs) for fixed batch size;
+- Learning curves for each thread-count with batch downsized based on thread count (compare with regular parallel minibatch SGD, where the dropout network would be the same for all cores, and the curves are expected to be the same)
+- Learning curves for multiple worker iteration counts with fixed number of threads
+- Speedup vs thread count to cross a fixed value of training error (maybe for multiple batch sizes)
