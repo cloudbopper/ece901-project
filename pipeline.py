@@ -102,7 +102,7 @@ def main():
                         " with a fixed network", type=int, default=1)
     parser.add_argument("-num_epochs", default=500, type=int)
     parser.add_argument("-term_val_acc", help="level of validation set accuracy in % after "
-                        "reaching which algorithm will terminate", default=100, type=int)
+                        "reaching which algorithm will terminate", default=100., type=float)
 
     args = parser.parse_args()
     epoch_times, train_losses, val_pc_accs, test_pc_acc = pipeline(args)
@@ -436,7 +436,7 @@ def build_mlp(args, netid, input_var=None, mask_inputs=False):
     # Add a fully-connected layer of 800 units, using the linear rectifier, and
     # initializing weights with Glorot's scheme (which is the default anyway):
     l_hid1 = lasagne.layers.DenseLayer(
-            l_in_drop, num_units=800,
+            l_in_drop, num_units=200,
             nonlinearity=lasagne.nonlinearities.rectify,
             W=lasagne.init.GlorotUniform(),
             name="%d_%s" % (netid, "l_hid1"))
@@ -450,7 +450,7 @@ def build_mlp(args, netid, input_var=None, mask_inputs=False):
 
     # Another 800-unit layer:
     l_hid2 = lasagne.layers.DenseLayer(
-            l_hid1_drop, num_units=800,
+            l_hid1_drop, num_units=200,
             nonlinearity=lasagne.nonlinearities.rectify,
             name="%d_%s" % (netid, "l_hid2"))
 
