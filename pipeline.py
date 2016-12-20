@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import pickle
 import time
 import threading
 from urllib import urlretrieve
@@ -12,20 +13,21 @@ import theano
 import theano.tensor as T
 
 import dropout
-from thread_manager import TM
+from threadmanager import ThreadManager
 
 # pylint: disable=superfluous-parens
 
 
 class WorkerThread(threading.Thread):
     """Worker thread implementation"""
-    # pylint: disable=no-self-use,too-many-instance-attributes
-    def __init__(self, tid, read_fn, write_fn, train_fn):
+    # pylint: disable=no-self-use,too-many-instance-attributes,too-many-arguments
+    def __init__(self, tid, read_fn, write_fn, train_fn, thread_manager):
         threading.Thread.__init__(self)
         self.tid = tid
         self.read_fn = read_fn
         self.write_fn = write_fn
         self.train_fn = train_fn
+        self.thread_manager = thread_manager
         self.daemon = True
         self.initial_weights = None
         self.tparams = None
@@ -34,18 +36,18 @@ class WorkerThread(threading.Thread):
 
     def pre_update(self):
         """Pre-update CV management"""
-        TM.updates_cv.acquire()
-        while TM.updating:
-            TM.updates_cv.wait()
-        TM.updating = 1
-        TM.updates_cv.release()
+        self.thread_manager.updates_cv.acquire()
+        while self.thread_manager.updating:
+            self.thread_manager.updates_cv.wait()
+        self.thread_manager.updating = 1
+        self.thread_manager.updates_cv.release()
 
     def post_update(self):
         """Post-update CV management"""
-        TM.updates_cv.acquire()
-        TM.updating = 0
-        TM.updates_cv.notify()
-        TM.updates_cv.release()
+        self.thread_manager.updates_cv.acquire()
+        self.thread_manager.updating = 0
+        self.thread_manager.updates_cv.notify()
+        self.thread_manager.updates_cv.release()
 
     def read_params(self):
         """Read per-thread params from global params"""
@@ -65,20 +67,20 @@ class WorkerThread(threading.Thread):
     def train(self, inputs, targets, dropout_mask):
         """Train and update overall training error"""
         out = self.train_fn(self.tid)(inputs, targets, *dropout_mask)
-        TM.err_lock.acquire()
-        TM.train_err += out
-        TM.err_lock.release()
+        self.thread_manager.err_lock.acquire()
+        self.thread_manager.train_err += out
+        self.thread_manager.err_lock.release()
 
     def run(self):
         """Run worker thread"""
         while True:
             self.age += 1
-            batches, dropout_mask = TM.pool.get()
+            batches, dropout_mask = self.thread_manager.pool.get()
             self.read_params()
             for inputs, targets in batches:
                 self.train(inputs, targets, dropout_mask)
             self.write_params()
-            TM.pool.task_done()
+            self.thread_manager.pool.task_done()
 
 
 def main():
@@ -103,8 +105,9 @@ def main():
                         "reaching which algorithm will terminate", default=100, type=int)
 
     args = parser.parse_args()
-    pipeline(args)
-
+    epoch_times, train_losses, val_pc_accs, test_pc_acc = pipeline(args)
+    with open("data/objs.pickle", "w") as objs_file:
+        pickle.dump([epoch_times, train_losses, val_pc_accs, test_pc_acc], objs_file)
 
 def pipeline(args):
     """Dropout experiment pipeline
@@ -117,6 +120,7 @@ def pipeline(args):
         args.synchronize_workers = True
         args.dropout_rate = 1 - 1./args.threads
 
+    thread_manager = ThreadManager(args.threads)
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
@@ -125,6 +129,13 @@ def pipeline(args):
     print("Building model and compiling functions...")
     read_fn, write_fn, train_fn, val_fn, network = gen_computational_graphs(args)
     mask_fn = gen_mask_functions(args, network)
+
+    # Create worker threads
+    workers = [None] * args.threads
+    for tid in range(args.threads):
+        worker = WorkerThread(tid, read_fn, write_fn, train_fn, thread_manager)
+        worker.start()
+        workers[tid] = worker
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -135,15 +146,8 @@ def pipeline(args):
     for epoch in range(args.num_epochs):
         # In each epoch, we do a full pass over the training data:
         start_time = time.time()
-        TM.train_err = 0
+        thread_manager.train_err = 0
         train_batches = 0
-        TM.init_pool(args.threads)
-        # Launch worker threads
-        workers = [None] * args.threads
-        for tid in range(args.threads):
-            worker = WorkerThread(tid, read_fn, write_fn, train_fn)
-            worker.start()
-            workers[tid] = worker
         batch_generator = iterate_minibatches(X_train, y_train, args.batch_size, shuffle=True)
         epoch_complete = False
         while True:
@@ -159,17 +163,17 @@ def pipeline(args):
                         epoch_complete = True
                         break
                 if tbatches:
-                    TM.pool.put((tbatches, dropout_masks[tid]))
+                    thread_manager.pool.put((tbatches, dropout_masks[tid]))
                 if epoch_complete:
                     break
             if epoch_complete:
                 break
             if args.synchronize_workers:
-                TM.pool.join()
+                thread_manager.pool.join()
                 # Validate disjoint dropout
                 if args.debug:
                     assert validate_disjoint_dropout(args, workers)
-        TM.pool.join()
+        thread_manager.pool.join()
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
@@ -183,7 +187,7 @@ def pipeline(args):
 
         # Then we print the results for this epoch:
         epoch_times.append(time.time() - start_time)
-        train_losses.append(TM.train_err / train_batches)
+        train_losses.append(thread_manager.train_err / train_batches)
         val_pc_accs.append(val_acc / val_batches * 100)
 
         print("Epoch {} of {} took {:.3f}s".format(
@@ -237,11 +241,13 @@ def gen_computational_graphs(args):
     # Create separate training networks for each thread
     train_fns = []
     params_per_thread = []
+    netid = 0
     for tid in range(args.threads):
         # Prepare Theano variables for inputs and targets
         input_var = T.tensor4('inputs_%d' % tid)
         target_var = T.ivector('targets_%d' % tid)
-        network, masks = build_mlp(args, input_var, mask_inputs=True)
+        network, masks = build_mlp(args, netid, input_var, mask_inputs=True)
+        netid += 1
 
         # Create a loss expression for training
         prediction = lasagne.layers.get_output(network)
@@ -266,7 +272,7 @@ def gen_computational_graphs(args):
     # Compile a second function computing the validation loss and accuracy:
     input_var = T.tensor4('input')
     target_var = T.ivector('targets')
-    network, _ = build_mlp(args, input_var)
+    network, _ = build_mlp(args, netid, input_var)
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -405,7 +411,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
-def build_mlp(args, input_var=None, mask_inputs=False):
+def build_mlp(args, netid, input_var=None, mask_inputs=False):
     """Build MLP model"""
     # pylint: disable=bad-continuation
     # This creates an MLP of two hidden layers of 800 units each, followed by
@@ -418,14 +424,14 @@ def build_mlp(args, input_var=None, mask_inputs=False):
 
     l_in = lasagne.layers.InputLayer(shape=(None, 1, 28, 28),
                                      input_var=input_var,
-                                     name="%d_%s" % (TM.network_count, "l_in"))
+                                     name="%d_%s" % (netid, "l_in"))
 
     mask_in = None
     if mask_inputs:
         mask_in = T.ltensor3()
     # Apply 20% dropout to the input data:
     l_in_drop = dropout.DropoutLayer(l_in, mask=mask_in, p=args.input_dropout_rate,
-                                     name="%d_%s" % (TM.network_count, "l_in_drop"))
+                                     name="%d_%s" % (netid, "l_in_drop"))
 
     # Add a fully-connected layer of 800 units, using the linear rectifier, and
     # initializing weights with Glorot's scheme (which is the default anyway):
@@ -433,36 +439,35 @@ def build_mlp(args, input_var=None, mask_inputs=False):
             l_in_drop, num_units=800,
             nonlinearity=lasagne.nonlinearities.rectify,
             W=lasagne.init.GlorotUniform(),
-            name="%d_%s" % (TM.network_count, "l_hid1"))
+            name="%d_%s" % (netid, "l_hid1"))
 
     # We'll now add dropout of 50%:
     mask_hid1 = None
     if mask_inputs:
         mask_hid1 = T.lvector()
     l_hid1_drop = dropout.DropoutLayer(l_hid1, mask=mask_hid1, p=args.dropout_rate,
-                                       name="%d_%s" % (TM.network_count, "l_hid1_drop"))
+                                       name="%d_%s" % (netid, "l_hid1_drop"))
 
     # Another 800-unit layer:
     l_hid2 = lasagne.layers.DenseLayer(
             l_hid1_drop, num_units=800,
             nonlinearity=lasagne.nonlinearities.rectify,
-            name="%d_%s" % (TM.network_count, "l_hid2"))
+            name="%d_%s" % (netid, "l_hid2"))
 
     # 50% dropout again:
     mask_hid2 = None
     if mask_inputs:
         mask_hid2 = T.lvector()
     l_hid2_drop = dropout.DropoutLayer(l_hid2, mask=mask_hid2, p=args.dropout_rate,
-                                       name="%d_%s" % (TM.network_count, "l_hid2_drop"))
+                                       name="%d_%s" % (netid, "l_hid2_drop"))
 
     # Finally, we'll add the fully-connected output layer, of 10 softmax units:
     l_out = lasagne.layers.DenseLayer(
             l_hid2_drop, num_units=10,
             nonlinearity=lasagne.nonlinearities.softmax,
-            name="%d_%s" % (TM.network_count, "l_out"))
+            name="%d_%s" % (netid, "l_out"))
 
     masks = [mask_in, mask_hid1, mask_hid2]
-    TM.network_count += 1
     # Each layer is linked to its incoming layer(s), so we only need to pass
     # the output layer to give access to a network in Lasagne:
     return l_out, masks
