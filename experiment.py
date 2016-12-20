@@ -23,7 +23,7 @@ def main():
     font = {'weight' : 'bold',
             'size'   : 16}
     matplotlib.rc('font', **font)
-    dropout_types = ["disjoint", "overlapping", "overlapping -synchronize_workers"]
+    dropout_types = ["regular", "disjoint", "overlapping", "overlapping -synchronize_workers"]
     output_header = "data/1/%s" % args.type
     if args.type == "learningcurves":
         for dropout_type in dropout_types:

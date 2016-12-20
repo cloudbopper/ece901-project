@@ -91,7 +91,7 @@ def main():
     parser.add_argument("-batch_size", help="size of batch operated upon by "
                         "each worker thread", required=True, type=int)
     parser.add_argument("-dropout_type", help="type of dropout", required=True,
-                        choices=["disjoint", "overlapping"])
+                        choices=["disjoint", "overlapping", "regular"])
     parser.add_argument("-input_dropout_rate", type=float, default=0.2)
     parser.add_argument("-dropout_rate", type=float, default=0.5)
     parser.add_argument("-synchronize_workers", help="master waits for all workers to "
@@ -307,9 +307,10 @@ def gen_computational_graphs(args):
 
 def gen_mask_functions(args, network):
     """Returns dropout mask-generating functions"""
+    # pylint: disable=too-many-branches
     mask_fns = []
     layers = lasagne.layers.get_all_layers(network)
-    if args.dropout_type == "overlapping" or args.threads == 1:
+    if args.dropout_type == "overlapping" or args.dropout_type == "regular" or args.threads == 1:
         for layer in layers:
             if isinstance(layer, dropout.DropoutLayer):
                 # workaround to set mask shape correctly regardless of input layer
@@ -320,7 +321,10 @@ def gen_mask_functions(args, network):
                 # pylint: disable=cell-var-from-loop
                 func = lambda p=layer.p, shape=mask_shape: np.random.binomial(1, (1-p), shape)
                 mask_fns.append(func)
-        return lambda: [[func() for func in mask_fns] for _ in range(args.threads)]
+        if args.dropout_type == "regular":
+            return lambda: [[func() for func in mask_fns]] * args.threads
+        elif args.dropout_type == "overlapping":
+            return lambda: [[func() for func in mask_fns] for _ in range(args.threads)]
     else:
         # Disjoint dropout
         retain_prob = 1./args.threads
